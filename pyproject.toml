@@ -41,6 +41,7 @@ variant-allele-frequency-calculator = "cli:main"
 
 [tool.setuptools]
 packages = ["agents"]
+py-modules = ["vaf_calc", "cli", "simulator", "enrichment"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "."]

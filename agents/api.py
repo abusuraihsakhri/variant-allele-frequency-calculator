@@ -3,8 +3,10 @@ FastAPI REST API Server for Variant Allele Frequency Calculator.
 """
 from typing import Dict, Any, List
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from pathlib import Path
 from pydantic import BaseModel
-from .base import AuditLogger, PHIGuard
+from .base import AuditLogger, PHIGuard, SecurityException
 from .models import SystemTaskPayload, ConsensusDossier
 from .supervisor import SystemSupervisor
 
@@ -37,8 +39,11 @@ def metrics():
 
 @app.post("/api/audit")
 def api_audit(payload: SystemTaskPayload):
-    dossier = supervisor.process_task(payload)
-    return dossier.to_dict()
+    try:
+        dossier = supervisor.process_task(payload)
+        return dossier.to_dict()
+    except SecurityException:
+        raise HTTPException(status_code=422, detail="Input contains a restricted identifier") from None
 
 
 @app.post("/api/chat")
@@ -53,3 +58,13 @@ def api_chat(req: ChatRequest):
 @app.get("/api/audit/logs")
 def api_audit_logs():
     return {"audit_trail": AuditLogger.get_trail(), "verified": AuditLogger.verify_integrity()}
+
+
+@app.get("/", include_in_schema=False)
+def web_interface():
+    return FileResponse(Path(__file__).resolve().parent.parent / "web" / "index.html")
+
+
+@app.get("/app.js", include_in_schema=False)
+def web_script():
+    return FileResponse(Path(__file__).resolve().parent.parent / "web" / "app.js", media_type="text/javascript")

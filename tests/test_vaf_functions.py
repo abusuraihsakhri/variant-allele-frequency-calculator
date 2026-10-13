@@ -72,15 +72,15 @@ class TestCalculateVAF:
 
     def test_vaf_category_subclonal(self):
         result = calculate_vaf(1, 100)
-        assert "Subclonal" in result["category"]
+        assert result["category"] == "VAF below 2%"
 
     def test_vaf_category_heterozygous(self):
         result = calculate_vaf(40, 100)
-        assert "Heterozygous" in result["category"]
+        assert result["category"] == "VAF 2% to below 45%"
 
     def test_vaf_category_homozygous(self):
         result = calculate_vaf(80, 100)
-        assert "Homozygous" in result["category"]
+        assert result["category"] == "VAF 55% or above"
 
 
 class TestCalculateMELDNa:
