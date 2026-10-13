@@ -28,8 +28,9 @@ def _safe_float(val: Any, default: float = 0.0) -> float:
     if val is None:
         return default
     try:
-        return float(val)
-    except (ValueError, TypeError):
+        result = float(val)
+        return result if math.isfinite(result) else default
+    except (ValueError, TypeError, OverflowError):
         return default
 
 
@@ -205,54 +206,57 @@ def calculate_apri_fib4(ast_u_l: Any, alt_u_l: Any = None, platelets_109: Any = 
     return results
 
 
+def _read_depth(value: Any) -> Optional[int]:
+    """Accept finite, nonnegative whole-number read counts within JS-safe range."""
+    if isinstance(value, bool):
+        return None
+    try:
+        count = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(count) or count < 0 or not count.is_integer() or count > 2**53 - 1:
+        return None
+    return int(count)
+
+
 def calculate_vaf(variant_depth: Any, total_depth: Any) -> Dict[str, Any]:
+    """Compute alternate-read fraction and a two-sided 95% Wilson score interval.
+
+    Counts must be nonnegative integers. VAF by itself does not establish
+    zygosity, clonality, tumour purity or copy-number status.
     """
-    Calculate Variant Allele Frequency (VAF) from read depths.
-    VAF = variant_depth / total_depth
-    Also computes binomial 95% confidence interval.
-    """
-    vd = _safe_float(variant_depth, 0.0)
-    td = _safe_float(total_depth, 0.0)
+    vd = _read_depth(variant_depth)
+    td = _read_depth(total_depth)
+    if td is None or td == 0:
+        return {"error": "Total depth must be a positive whole-number read count", "vaf": None}
+    if vd is None or vd > td:
+        return {"error": "Variant depth must be a whole number between 0 and total depth", "vaf": None}
 
-    if td <= 0:
-        return {"error": "Total depth must be positive", "vaf": None}
+    p = vd / td
+    z = 1.959963984540054
+    denominator = 1 + z * z / td
+    centre = (p + z * z / (2 * td)) / denominator
+    half_width = z / denominator * math.sqrt(p * (1 - p) / td + z * z / (4 * td * td))
+    lo = max(0.0, centre - half_width)
+    hi = min(1.0, centre + half_width)
 
-    if vd < 0 or vd > td:
-        return {"error": "Variant depth must be between 0 and total depth", "vaf": None}
-
-    vaf = vd / td
-
-    # Wilson score interval for binomial proportion 95% CI
-    if td > 0:
-        z = 1.96  # 95% CI
-        p = vaf
-        n = td
-        denominator = 1 + z * z / n
-        centre = (p + z * z / (2 * n)) / denominator
-        half_width = (z / denominator) * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
-        ci_low = max(0.0, centre - half_width)
-        ci_high = min(1.0, centre + half_width)
+    if p < 0.02:
+        category = "VAF below 2%"
+    elif p < 0.45:
+        category = "VAF 2% to below 45%"
+    elif p < 0.55:
+        category = "VAF 45% to below 55%"
     else:
-        ci_low = ci_high = 0.0
-
-    # Determine VAF category
-    if vaf < 0.02:
-        category = "Subclonal (VAF < 2%)"
-    elif vaf < 0.45:
-        category = "Heterozygous variant"
-    elif vaf < 0.55:
-        category = "Homozygous/hemizygous boundary"
-    else:
-        category = "Homozygous dominant"
+        category = "VAF 55% or above"
 
     return {
-        "vaf": round(vaf, 4),
-        "vaf_percent": round(vaf * 100, 2),
-        "variant_depth": vd,
-        "total_depth": td,
-        "ci_95_low": round(ci_low, 4),
-        "ci_95_high": round(ci_high, 4),
-        "category": category
+        "vaf": p,
+        "vaf_percent": round(p * 100, 4),
+        "variant_depth": float(vd),
+        "total_depth": float(td),
+        "ci_95_low": round(lo, 6),
+        "ci_95_high": round(hi, 6),
+        "category": category,
     }
 
 
@@ -261,10 +265,14 @@ def assess_row(row: Dict[str, Any]) -> Dict[str, Any]:
     try:
         row_lower = {k.lower(): v for k, v in row.items()}
 
-        # VAF calculation
-        if "variant_depth" in row or "total_depth" in row or "alt_depth" in row:
-            vd = row.get("variant_depth") or row.get("alt_depth")
-            td = row.get("total_depth") or row.get("depth")
+        # VAF calculation (case-insensitive, retaining zero-valued counts).
+        if any(k in row_lower for k in ("variant_depth", "alt_depth", "total_depth", "depth")):
+            vd = row_lower.get("variant_depth")
+            if vd is None or vd == "":
+                vd = row_lower.get("alt_depth")
+            td = row_lower.get("total_depth")
+            if td is None or td == "":
+                td = row_lower.get("depth")
             return calculate_vaf(vd, td)
 
         # MELD-Na liver disease score
@@ -319,12 +327,12 @@ def process_csv(inp: str, out: str) -> list:
         res = assess_row(row)
         merged = {**row, **{k: str(v) for k, v in res.items()}}
         results.append(merged)
-    # union fieldnames
+    # Union field names in stable order so repeated batch runs have identical columns.
     all_keys = set()
     for rr in results:
         all_keys.update(rr.keys())
     # keep original first
-    extra = [k for k in all_keys if k not in fieldnames]
+    extra = sorted(k for k in all_keys if k not in fieldnames)
     with open(out, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(fieldnames) + extra)
         w.writeheader()
